@@ -21,6 +21,7 @@ cc_library(
     hdrs = ["codegen_backend.h"],
     deps = [
         "//xla/hlo/ir:hlo",
+        "//xla/service:compiler",
         "//xla/service:executable",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",

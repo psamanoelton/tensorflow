@@ -242,6 +242,13 @@ void ExtendConfigsWithTma(
 
 absl::StatusOr<std::vector<std::unique_ptr<BackendConfig>>>
 BlockLevelEmitterBackend::GetSupportedConfigs(const HloInstruction& instr) {
+  if (use_default_config_) {
+    TF_ASSIGN_OR_RETURN(auto config, GetDefaultConfig(instr));
+    std::vector<std::unique_ptr<BackendConfig>> configs;
+    configs.push_back(std::move(config));
+    return configs;
+  }
+
   if (!IsSupported(instr)) {
     return std::vector<std::unique_ptr<BackendConfig>>();
   }
@@ -294,7 +301,7 @@ BlockLevelEmitterBackend::GetSupportedConfigs(const HloInstruction& instr) {
     }
 
     // Set default kernel execution parameters.
-    config.set_num_warps(1);           // Number of warps per block.
+    config.set_num_warps(4);           // Number of warps per block.
     config.set_num_ctas(1);            // Number of thread blocks (CTAs).
     config.set_num_stages(1);          // Number of pipeline stages.
     config.set_is_tma_allowed(false);  // Can codegen attempt to use TMA?

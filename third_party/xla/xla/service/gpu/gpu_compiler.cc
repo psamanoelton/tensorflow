@@ -2410,9 +2410,9 @@ GpuCompiler::CompileToBackendResult(
   HloPassPipeline pipeline("scheduled-gpu-module");
   AddHloVerifier(&pipeline);
   TF_RETURN_IF_ERROR(pipeline.Run(module).status());
-  TF_RETURN_IF_ERROR(
-      RunPostSchedulingPipelines(module, schedule_metadata.scheduler_mem_limit,
-                                 gpu_device_info, alias_info.get()));
+  TF_RETURN_IF_ERROR(RunPostSchedulingPipelines(
+      module, executor, schedule_metadata.scheduler_mem_limit, gpu_device_info,
+      alias_info.get(), options));
 
   absl::StatusOr<se::Platform*> platform =
       se::PlatformManager::PlatformWithId(PlatformId());
@@ -2610,9 +2610,9 @@ absl::StatusOr<std::unique_ptr<Executable>> GpuCompiler::RunBackend(
           /*alias_info=*/std::move(alias_info),
           /*debug_options=*/std::move(debug_opts),
           /*device_description=*/gpu_device_info,
-          /*debug_module=*/options.is_autotuning_compilation
-              ? std::unique_ptr<HloModule>()
-              : std::move(module),
+          // TODO b/407494653: AutotunerPass requires module to compile.
+          // Remove module on autotuning runs once this is fixed.
+          /*debug_module=*/std::move(module),
           /*enable_debug_info_manager=*/!options.is_autotuning_compilation}));
 
   if (embed_ir_in_executable) {
@@ -2826,9 +2826,9 @@ HloRematerialization::Options CreateRematOpts(
 }
 
 absl::Status GpuCompiler::RunPostSchedulingPipelines(
-    HloModule* module, int64_t scheduler_mem_limit,
-    const se::DeviceDescription& gpu_device_info,
-    const GpuAliasInfo* alias_info) const {
+    HloModule* module, se::StreamExecutor* executor,
+    int64_t scheduler_mem_limit, const se::DeviceDescription& gpu_device_info,
+    const GpuAliasInfo* alias_info, const CompileOptions& options) {
   tsl::profiler::TraceMe traceme("RunPostSchedulingPipelines");
   TF_RETURN_IF_ERROR(RunPostSchedulingCopyInsertion(module, alias_info));
   HloPassPipeline main_pipeline("post-scheduling-passes");
@@ -2866,7 +2866,12 @@ absl::Status GpuCompiler::RunPostSchedulingPipelines(
         main_pipeline.AddPass<HloPassPipeline>("fusion-wrapper");
     pipeline.AddPass<FusionWrapper>(gpu_device_info);
   }
-
+  MaybeOwningThreadPool thread_pool = CreateMaybeOwningThreadPool(
+      /*parallelism=*/module->config()
+          .debug_options()
+          .xla_gpu_force_compilation_parallelism(),
+      /*default_thread_pool=*/options.thread_pool,
+      /*default_parallelism=*/tsl::port::MaxParallelism());
   const auto* cuda_cc = std::get_if<se::CudaComputeCapability>(
       &gpu_device_info.gpu_compute_capability());
   if (cuda_cc != nullptr && cuda_cc->IsAtLeastAmpere()) {
@@ -2874,6 +2879,10 @@ absl::Status GpuCompiler::RunPostSchedulingPipelines(
     // that create new fusions are FusionWrapper and StreamAttributeAnnotator.
     main_pipeline.AddPass<HloPassPipeline>(
         FusionDispatchPipeline(gpu_device_info, ShapeSizeBytesFunction()));
+    if (!options.is_autotuning_compilation) {
+      TF_RETURN_IF_ERROR(AddReductionFusionAutotuningPass(
+          &main_pipeline, module, thread_pool.get_mutable(), executor));
+    }
   }
 
   // Pipeline with passes which wrap a scheduled module into command buffers.

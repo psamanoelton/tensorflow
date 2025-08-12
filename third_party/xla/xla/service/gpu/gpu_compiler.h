@@ -93,9 +93,9 @@ class GpuCompiler : public LLVMCompiler {
       Executable* executable) const override;
 
   absl::Status RunPostSchedulingPipelines(
-      HloModule* module, int64_t scheduler_mem_limit,
-      const se::DeviceDescription& gpu_device_info,
-      const GpuAliasInfo* alias_info) const;
+      HloModule* module, se::StreamExecutor* stream_exec,
+      int64_t scheduler_mem_limit, const se::DeviceDescription& gpu_device_info,
+      const GpuAliasInfo* alias_info, const CompileOptions& options);
 
   std::string target_triple() const { return target_triple_; }
   std::string data_layout() const { return data_layout_; }
@@ -176,6 +176,13 @@ class GpuCompiler : public LLVMCompiler {
       AutotuneConfig& autotune_config, tsl::thread::ThreadPool* thread_pool,
       const MultiProcessKeyValueStore& key_value_store,
       const se::SemanticVersion& toolkit_version,
+      stream_executor::StreamExecutor* stream_executor) {
+    return absl::OkStatus();
+  }
+
+  virtual absl::Status AddReductionFusionAutotuningPass(
+      HloPassPipeline* pipeline, HloModule* hlo_module,
+      tsl::thread::ThreadPool* thread_pool,
       stream_executor::StreamExecutor* stream_executor) {
     return absl::OkStatus();
   }

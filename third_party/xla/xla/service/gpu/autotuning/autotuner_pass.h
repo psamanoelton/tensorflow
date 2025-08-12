@@ -40,7 +40,8 @@ class AutotunerPass : public HloModulePass {
       std::vector<std::unique_ptr<CodegenBackend>> backends,
       const DebugOptions& debug_options,
       stream_executor::StreamExecutor* stream_executor,
-      tsl::thread::ThreadPool* thread_pool);
+      tsl::thread::ThreadPool* thread_pool,
+      InstructionFilterFn instruction_filter_fn);
 
   absl::string_view name() const override { return "autotuner"; }
 
@@ -50,10 +51,13 @@ class AutotunerPass : public HloModulePass {
       const absl::flat_hash_set<absl::string_view>& execution_threads) override;
 
  private:
-  explicit AutotunerPass(std::unique_ptr<Autotuner> autotuner)
-      : autotuner_(std::move(autotuner)) {}
+  explicit AutotunerPass(std::unique_ptr<Autotuner> autotuner,
+                         InstructionFilterFn instruction_filter_fn)
+      : autotuner_(std::move(autotuner)),
+        instruction_filter_fn_(instruction_filter_fn) {}
 
   std::unique_ptr<Autotuner> autotuner_;
+  InstructionFilterFn instruction_filter_fn_;
 };
 
 }  // namespace gpu

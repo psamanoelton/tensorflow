@@ -32,9 +32,12 @@ limitations under the License.
 #include "xla/backends/autotuner/file_based_autotuner_cache.h"
 #include "xla/backends/autotuner/profiler.h"
 #include "xla/backends/gpu/autotuner/gpu_profiler.h"
+#include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/cublas_cudnn.h"
 #include "xla/stream_executor/stream_executor.h"
 #include "xla/tsl/platform/errors.h"
@@ -48,7 +51,8 @@ absl::StatusOr<std::unique_ptr<AutotunerPass>> AutotunerPass::Create(
     std::vector<std::unique_ptr<CodegenBackend>> backends,
     const DebugOptions& debug_options,
     stream_executor::StreamExecutor* stream_executor,
-    tsl::thread::ThreadPool* thread_pool) {
+    tsl::thread::ThreadPool* thread_pool,
+    InstructionFilterFn instruction_filter_fn) {
   std::unique_ptr<GpuProfiler> profiler =
       GpuProfiler::Create(stream_executor, ProfileOptions());
 
@@ -82,7 +86,8 @@ absl::StatusOr<std::unique_ptr<AutotunerPass>> AutotunerPass::Create(
       std::unique_ptr<Autotuner> autotuner,
       Autotuner::Create(std::move(backends), std::move(profiler),
                         AutotuneConfig(), std::move(cache), thread_pool));
-  return absl::WrapUnique(new AutotunerPass(std::move(autotuner)));
+  return absl::WrapUnique(
+      new AutotunerPass(std::move(autotuner), instruction_filter_fn));
 }
 
 absl::StatusOr<bool> AutotunerPass::Run(
@@ -90,12 +95,7 @@ absl::StatusOr<bool> AutotunerPass::Run(
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   VLOG(1) << "Running Autotuner Pass";
 
-  auto should_autotune = [](const HloInstruction& instruction) -> bool {
-    return instruction.opcode() == HloOpcode::kCustomCall &&
-           IsCublasGemm(instruction);
-  };
-
-  TF_RETURN_IF_ERROR(autotuner_->Autotune(module, should_autotune));
+  TF_RETURN_IF_ERROR(autotuner_->Autotune(module, instruction_filter_fn_));
   return true;
 }
 

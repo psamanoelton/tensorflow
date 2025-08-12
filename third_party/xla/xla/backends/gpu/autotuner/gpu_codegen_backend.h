@@ -59,7 +59,7 @@ class GpuCodegenBackend : public CodegenBackend {
   }
 
   absl::StatusOr<std::unique_ptr<Executable>> Compile(
-      const HloInstruction& hlo_instruction,
+      const HloInstruction& hlo_instruction, Compiler::CompileOptions& options,
       const BackendConfig& config) override {
     std::unique_ptr<HloModule> hlo_module =
         ExtractInstructionIntoNewModule(hlo_instruction);
@@ -72,7 +72,6 @@ class GpuCodegenBackend : public CodegenBackend {
     hlo_module->mutable_config().mutable_debug_options().set_xla_enable_dumping(
         false);
 
-    Compiler::CompileOptions options;
     TF_ASSIGN_OR_RETURN(auto optimized_module,
                         RunHloPasses(std::move(hlo_module), options));
     return compiler_->RunBackend(std::move(optimized_module), stream_executor_,
@@ -95,7 +94,7 @@ class GpuCodegenBackend : public CodegenBackend {
   std::string name_;
   stream_executor::StreamExecutor* stream_executor_;
   Compiler::TargetConfig target_config_;
-  const DebugOptions& debug_options_;
+  const DebugOptions debug_options_;
   // TODO(b/407494653): remove compiler when we don't need to run any HLO passes
   // and the codegen backend can directly produce an executable without a
   // compiler instance.
