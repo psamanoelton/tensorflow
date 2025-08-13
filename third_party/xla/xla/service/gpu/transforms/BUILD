@@ -2017,6 +2017,7 @@ cc_library(
         "//xla/service/gpu/model:symbolic_tiled_hlo_instruction",
         "//xla/service/gpu/model:tiled_hlo_instruction_or_computation",
         "//xla/stream_executor:device_description",
+        "//xla/tools:hlo_decomposer_lib",
         "//xla/tools:hlo_extractor",
         "//xla/tsl/platform:errors",
         "//xla/tsl/platform:statusor",
