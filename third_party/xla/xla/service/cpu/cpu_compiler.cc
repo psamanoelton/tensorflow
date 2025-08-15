@@ -40,6 +40,7 @@ limitations under the License.
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
@@ -552,6 +553,16 @@ absl::Status CpuCompiler::RunHloPassesThroughLayoutAssn(
     }
     spmd_pipeline.AddPass<spmd::StatefulRngSpmdPartitioner>(
         num_partitions, module->config().replica_count());
+    spmd_pipeline.AddPass<xla::CallInliner>(
+        /*single_call_site=*/true,
+        /*update_domain=*/false,
+        /*composites_to_preserve=*/absl::flat_hash_set<std::string>{},
+        /*uniquify_channel_ids=*/false,
+        /*should_inline=*/
+        [](const xla::CallGraph& call_graph, xla::HloInstruction* instruction) {
+          return absl::StrContains(instruction->to_apply()->name(),
+                                   "xla.sdy.inlinable_shard_map");
+        });
     TF_RETURN_IF_ERROR(spmd_pipeline.Run(module).status());
   } else {
     HloPassPipeline sharding_removal_pipeline("sharding-removal");

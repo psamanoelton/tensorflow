@@ -113,9 +113,8 @@ bool allShardingsUnreduced(ArrayRef<TensorShardingAttr> shardings) {
 }
 
 // Convert the shardings from kShardingAttr into kXlaShardingAttr.
-LogicalResult exportFunc(FuncOp funcOp, const SymbolTable& symbolTable,
-                         OpBuilder& builder,
-                         bool addMissingShardingToControlFlow) {
+void exportFunc(FuncOp funcOp, const SymbolTable& symbolTable,
+                OpBuilder& builder, bool addMissingShardingToControlFlow) {
   std::function<StringAttr(const HloSharding&)> getStringAttr =
       [&](const HloSharding& hloSharding) {
         return builder.getStringAttr(hloSharding.ToString());
@@ -175,6 +174,7 @@ LogicalResult exportFunc(FuncOp funcOp, const SymbolTable& symbolTable,
       setHloShardingAttr(op, shardings, getMeshAttr, manualAxes);
       op->removeAttr(kShardingAttr);
     } else if (addMissingShardingToControlFlow &&
+               !op->hasAttr(kXlaShardingAttr) &&
                mlir::isa<stablehlo::WhileOp, stablehlo::CaseOp,
                          stablehlo::IfOp>(op)) {
       // The shard map export pass assigns shardings to any operation with
@@ -184,9 +184,37 @@ LogicalResult exportFunc(FuncOp funcOp, const SymbolTable& symbolTable,
       CHECK(manualAxes.empty());
       op->setAttr(kXlaShardingAttr, getStringAttr(HloSharding::Replicate()));
     }
-  });
 
-  return success();
+    // We export ManualComputationOp as a CallOp, so make sure the shardings of
+    // the function is updated.
+    if (auto callOp = mlir::dyn_cast<mlir::func::CallOp>(op)) {
+      auto calleeFuncOp = symbolTable.lookup<FuncOp>(callOp.getCallee());
+      for (int64_t i = 0; i < calleeFuncOp.getNumArguments(); ++i) {
+        if (mlir::sdy::TensorShardingAttr sharding =
+                calleeFuncOp.getArgAttrOfType<mlir::sdy::TensorShardingAttr>(
+                    i, kShardingAttr)) {
+          HloSharding hloSharding =
+              convertToHloSharding(sharding, getMeshAttr, manualAxes);
+          calleeFuncOp.setArgAttr(
+              i, kXlaShardingAttr,
+              StringAttr::get(op->getContext(), hloSharding.ToString()));
+          calleeFuncOp.removeArgAttr(i, kShardingAttr);
+        }
+      }
+      for (int64_t i = 0; i < calleeFuncOp.getNumResults(); ++i) {
+        if (mlir::sdy::TensorShardingAttr sharding =
+                calleeFuncOp.getResultAttrOfType<mlir::sdy::TensorShardingAttr>(
+                    i, kShardingAttr)) {
+          HloSharding hloSharding =
+              convertToHloSharding(sharding, getMeshAttr, manualAxes);
+          calleeFuncOp.setResultAttr(
+              i, kXlaShardingAttr,
+              StringAttr::get(op->getContext(), hloSharding.ToString()));
+          calleeFuncOp.removeResultAttr(i, kShardingAttr);
+        }
+      }
+    }
+  });
 }
 
 class ExportStablehloShardingsPass
@@ -207,10 +235,7 @@ class ExportStablehloShardingsPass
     auto builder = OpBuilder::atBlockBegin(&moduleOp.getBodyRegion().front());
 
     for (auto funcOp : moduleOp.getOps<FuncOp>()) {
-      if (mlir::failed(exportFunc(funcOp, symbolTable, builder,
-                                  addMissingShardingToControlFlow))) {
-        signalPassFailure();
-      }
+      exportFunc(funcOp, symbolTable, builder, addMissingShardingToControlFlow);
     }
 
     moduleOp.walk([&](stablehlo::CustomCallOp customCall) {

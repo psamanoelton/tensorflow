@@ -17,9 +17,12 @@ limitations under the License.
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
+#include "absl/container/flat_hash_set.h"
 #include "absl/functional/function_ref.h"
 #include "absl/log/check.h"
+#include "absl/strings/match.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_schedule.h"
@@ -32,6 +35,8 @@ limitations under the License.
 #include "xla/hlo/transforms/simplifiers/reshape_mover.h"
 #include "xla/hlo/transforms/simplifiers/sort_simplifier.h"
 #include "xla/hlo/transforms/simplifiers/tuple_simplifier.h"
+#include "xla/service/call_graph.h"
+#include "xla/service/call_inliner.h"
 #include "xla/service/conditional_simplifier.h"
 #include "xla/service/gather_expander.h"
 #include "xla/service/gpu/transforms/algebraic_simplifier.h"
@@ -128,6 +133,16 @@ void AddSPMDPasses(
       /*disable_ag_rewrite_for_multiple_consumers=*/true,
       /*enable_partial_windowed_einsums=*/true, oper_size_threshold,
       max_windowed_einsum_iteration);
+  spmd_pipeline.AddPass<xla::CallInliner>(
+      /*single_call_site=*/true,
+      /*update_domain=*/false,
+      /*composites_to_preserve=*/absl::flat_hash_set<std::string>{},
+      /*uniquify_channel_ids=*/false,
+      /*should_inline=*/
+      [](const xla::CallGraph& call_graph, xla::HloInstruction* instruction) {
+        return absl::StrContains(instruction->to_apply()->name(),
+                                 "xla.sdy.inlinable_shard_map");
+      });
   spmd_pipeline.AddPass<CollectivePermuteMotion>();
 }
 
