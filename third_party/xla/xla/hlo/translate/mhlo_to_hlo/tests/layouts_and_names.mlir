@@ -4,7 +4,7 @@
 
 // CHECK:  HloModule
 func.func @main(%arg0: tensor<128x224x224x4xf16>, %arg1: tensor<64x7x7x4xf16>) -> tensor<128x64x112x112xf16> {
-  // CHECK: %root.{{.*}} = f16[128,64,112,112]{1,3,2,0} convolution{{.*}}op_name="root.42"
+  // CHECK: %root.{{.*}} = f16[128,64,112,112]{1,3,2,0} convolution{{.*}}op_name="root"
   %0 = "mhlo.convolution"(%arg0, %arg1) {
     batch_group_count = 1 : i64,
     dimension_numbers = #mhlo.conv<raw
@@ -25,7 +25,7 @@ func.func @main(%arg0: tensor<128x224x224x4xf16>, %arg1: tensor<64x7x7x4xf16>) -
     precision_config = [ #mhlo<precision DEFAULT>, #mhlo<precision DEFAULT> ],
     rhs_dilations = dense<1> : tensor<2xi64>,
     window_strides = dense<2> : tensor<2xi64>
-  } : (tensor<128x224x224x4xf16>, tensor<64x7x7x4xf16>)-> tensor<128x64x112x112xf16> loc("root.42")
+  } : (tensor<128x224x224x4xf16>, tensor<64x7x7x4xf16>)-> tensor<128x64x112x112xf16> loc("root")
 
   // CHECK: s32[1,1]{0,1} constant({ {42} })
   %cst_1 = "arith.constant"() {value = dense<[[42]]> : tensor<1x1xi32>, xla_shape = "s32[1,1]{0,1}"} : () -> tensor<1x1xi32>

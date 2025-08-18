@@ -32,6 +32,7 @@ limitations under the License.
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
+#include "absl/strings/str_replace.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "llvm/ADT/APInt.h"
@@ -6114,7 +6115,10 @@ LogicalResult ConvertToHloModule::LowerBasicBlockAsFunction(
         // otherwise use the default prefix.
         std::string name = mhlo::GetDebugNameFromLocation(arg.getLoc());
         if (!name.empty()) {
-          name = llvm::sys::path::stem(name);
+          // Replace dots with underscores to avoid conflict with XlaBuilder's
+          // naming.
+          name = absl::StrReplaceAll(llvm::sys::path::filename(name),
+                                     {{".", "_"}});
         } else {
           name = kArgPrefix;
         }
@@ -6146,7 +6150,10 @@ LogicalResult ConvertToHloModule::LowerBasicBlockAsFunction(
         // otherwise use the default prefix.
         std::string name = mhlo::GetDebugNameFromLocation(arg.getLoc());
         if (!name.empty()) {
-          name = llvm::sys::path::stem(name);
+          // Replace dots with underscores to avoid conflict with XlaBuilder's
+          // naming.
+          name = absl::StrReplaceAll(llvm::sys::path::filename(name),
+                                     {{".", "_"}});
         } else {
           name = absl::StrCat(kArgPrefix, num);
         }

@@ -40,6 +40,7 @@ limitations under the License.
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
+#include "absl/strings/str_replace.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
@@ -4976,12 +4977,10 @@ absl::StatusOr<XlaOp> XlaBuilder::AddInstruction(
       absl::string_view name = (last_slash_pos == absl::string_view::npos)
                                    ? op_name
                                    : op_name.substr(last_slash_pos + 1);
-      // Further strip any numeric identifier suffixes.
-      if (absl::StrContains(name, kNameSeparator)) {
-        instr.set_name(GetBaseName(std::string(name), kNameSeparator));
-      } else {
-        instr.set_name(name);
-      }
+      // Replace separators with underscores to avoid naming conflicts while
+      // still maintaining support for structs.
+      instr.set_name(
+          absl::StrReplaceAll(name, {{std::string(1, kNameSeparator), "_"}}));
     } else {
       instr.set_name(instr.opcode());
     }
