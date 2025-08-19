@@ -31,6 +31,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/service/executable.h"
 #include "xla/service/gpu/autotuning/redzone_buffers.h"
+#include "xla/service/gpu/gpu_executable.h"
 #include "xla/service/gpu/gpu_executable_run_options.h"
 #include "xla/service/maybe_owning_device_memory.h"
 #include "xla/service/service_executable_run_options.h"
@@ -61,6 +62,26 @@ std::vector<ExecutionInput> CreateExecutionInputsFromBuffers(
         /*index=*/{}, MaybeOwningDeviceMemory(/*unowned=*/buffers.at(i)));
   }
   return inputs;
+}
+
+int GetScratchBytes(const GpuExecutable* gpu_executable) {
+  int scratch_bytes = 0;
+  for (const auto& allocation :
+       gpu_executable->buffer_assignment()->Allocations()) {
+    if (allocation.IsPreallocatedTempBuffer()) {
+      for (const auto& [buffer, offset] : allocation.assigned_buffers()) {
+        // Scratch space is allocated as the second element in the output tuple
+        // of the instruction.
+        const auto& shape_index = buffer->positions().front().index;
+        bool is_second_element_in_output_tuple =
+            !shape_index.empty() && shape_index[0] == 1;
+        if (is_second_element_in_output_tuple) {
+          scratch_bytes += offset.size;
+        }
+      }
+    }
+  }
+  return scratch_bytes;
 }
 
 }  // namespace
@@ -106,6 +127,12 @@ absl::StatusOr<ProfileResult> GpuProfiler::Profile(
   const GpuInputBuffers& gpu_buffers =
       tsl::down_cast<const GpuInputBuffers&>(buffers);
   const RedzoneBuffers& rz_buffers = gpu_buffers.redzone_buffers;
+  ProfileResult result;
+
+  if (options_.should_populate_scratch_bytes) {
+    result.scratch_bytes =
+        GetScratchBytes(tsl::down_cast<const GpuExecutable*>(executable));
+  }
   {
     // Warm up run.
     std::vector<ExecutionInput> execution_inputs =
@@ -128,11 +155,11 @@ absl::StatusOr<ProfileResult> GpuProfiler::Profile(
       ExecutionOutput execution_output,
       Execute(executable, std::move(execution_inputs), &profile));
 
+  result.duration = absl::Nanoseconds(profile.compute_time_ns());
   if (options_.should_populate_output_buffer) {
-    return ProfileResult{absl::Nanoseconds(profile.compute_time_ns()),
-                         execution_output.Commit().ConsumeResult()};
+    result.output_buffer = execution_output.Commit().ConsumeResult();
   }
-  return ProfileResult{absl::Nanoseconds(profile.compute_time_ns())};
+  return result;
 }
 
 absl::StatusOr<ExecutionOutput> GpuProfiler::Execute(

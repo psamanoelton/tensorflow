@@ -39,11 +39,15 @@ struct ProfileOptions {
   // of the execution. This is to avoid data copies if the caller doesn't need
   // the output buffer.
   bool should_populate_output_buffer = true;
+  // Whether to populate the scratch_bytes in the ProfileResult with the number
+  // of bytes used for scratch space.
+  bool should_populate_scratch_bytes = true;
 };
 
 struct ProfileResult {
   absl::Duration duration = absl::ZeroDuration();
   std::optional<ScopedShapedBuffer> output_buffer = std::nullopt;
+  int scratch_bytes = 0;
 };
 
 struct InputBuffers {
