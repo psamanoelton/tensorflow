@@ -3556,10 +3556,14 @@ absl::StatusOr<bool> AutoShardingImplementation::RunAutoSharding(
   // shardings to their input ops.
   absl::flat_hash_map<const HloInstruction*, std::vector<int64_t>>
       unspecified_dims;
+  bool use_shardy_partitioner = module->config().use_shardy_partitioner();
+  // If the module is transformed to Shardy in the following steps, we should
+  // not replace the sharding custom call with copy.
   TF_ASSIGN_OR_RETURN(
       bool changed,
       ProcessShardingInstruction(
-          module, execution_threads, /*replace_sharding_with_copy=*/true,
+          module, execution_threads,
+          /*replace_sharding_with_copy=*/!use_shardy_partitioner,
           &unspecified_dims, /*saved_root_shardings=*/nullptr,
           /*saved_parameter_shardings=*/nullptr,
           /*instruction_to_shard_group_id=*/nullptr,
@@ -3824,7 +3828,8 @@ absl::StatusOr<bool> AutoShardingImplementation::RunAutoSharding(
       CHECK(instruction->has_sharding());
       CHECK(instruction->sharding().IsManual());
       CHECK(instruction->operand(0)->has_sharding());
-      CHECK(!instruction->operand(0)->sharding().IsManual());
+      CHECK(spmd::IsShardingCustomCall(instruction->operand(0)) ||
+            !instruction->operand(0)->sharding().IsManual());
     } else if (spmd::IsSPMDShardToFullShapeCustomCall(instruction)) {
       CHECK(instruction->has_sharding());
       CHECK(!instruction->sharding().IsManual());
