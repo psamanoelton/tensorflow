@@ -21,9 +21,12 @@ limitations under the License.
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
+#include <map>
+#include <optional>
 #include <string>
 #include <tuple>
+#include <utility>
+#include <vector>
 
 #include "absl/log/check.h"
 #include "absl/log/log.h"
@@ -186,6 +189,199 @@ class Parser {
   SymbolicExprContext* context_;
 };
 
+// Returns {BASE, COEFF}, where expr is equivalent to BASE * COEFF.
+std::pair<SymbolicExpr, int64_t> GetBaseAndCoeff(SymbolicExpr expr) {
+  if (expr.GetType() == SymbolicExprType::kMul) {
+    SymbolicExpr lhs = expr.GetLHS();
+    SymbolicExpr rhs = expr.GetRHS();
+
+    if (rhs.GetType() == SymbolicExprType::kConstant) {
+      auto [base, coeff] = GetBaseAndCoeff(lhs);
+      return {base, coeff * rhs.GetValue()};
+    }
+    if (lhs.GetType() == SymbolicExprType::kConstant) {
+      auto [base, coeff] = GetBaseAndCoeff(rhs);
+      return {base, coeff * lhs.GetValue()};
+    }
+  }
+  return {expr, 1};
+}
+
+// Comparison function for sorting SymbolicExpr.
+bool CompareSymbolicExpr(const SymbolicExpr& lhs, const SymbolicExpr& rhs) {
+  CHECK(lhs && rhs);
+  SymbolicExprType lhs_type = lhs.GetType();
+  SymbolicExprType rhs_type = rhs.GetType();
+
+  const bool lhs_is_const = (lhs_type == SymbolicExprType::kConstant);
+  const bool rhs_is_const = (rhs_type == SymbolicExprType::kConstant);
+  if (lhs_is_const != rhs_is_const) {
+    // Non-constants come before constants.
+    return rhs_is_const;
+  }
+
+  if (lhs_type != rhs_type) {
+    return lhs_type < rhs_type;
+  }
+
+  switch (lhs_type) {
+    case SymbolicExprType::kVariable:
+    case SymbolicExprType::kConstant:
+      return lhs.GetValue() < rhs.GetValue();
+    case SymbolicExprType::kAdd:
+    case SymbolicExprType::kMul:
+      if (lhs.GetLHS() != rhs.GetLHS()) {
+        return CompareSymbolicExpr(lhs.GetLHS(), rhs.GetLHS());
+      }
+      return CompareSymbolicExpr(lhs.GetRHS(), rhs.GetRHS());
+    default:
+      return lhs.GetImpl() < rhs.GetImpl();
+  }
+}
+
+// Custom comparator for SymbolicExpr keys in std::map.
+struct SymbolicExprMapCompare {
+  bool operator()(const SymbolicExpr& lhs, const SymbolicExpr& rhs) const {
+    return CompareSymbolicExpr(lhs, rhs);
+  }
+};
+
+// Helper function to recursively extract terms from an Add expression.
+void ExtractTerms(
+    SymbolicExpr expr,
+    std::map<SymbolicExpr, int64_t, SymbolicExprMapCompare>& terms) {
+  if (expr.GetType() == SymbolicExprType::kAdd) {
+    ExtractTerms(expr.GetLHS(), terms);
+    ExtractTerms(expr.GetRHS(), terms);
+  } else {
+    auto [base, coeff] = GetBaseAndCoeff(expr);
+    terms[base] += coeff;
+  }
+}
+
+SymbolicExpr CanonicalizeAdd(SymbolicExpr lhs, SymbolicExpr rhs) {
+  SymbolicExprContext* ctx = lhs.GetContext();
+
+  // Neutral element
+  if (lhs.GetType() == SymbolicExprType::kConstant && lhs.GetValue() == 0) {
+    return rhs;
+  }
+  if (rhs.GetType() == SymbolicExprType::kConstant && rhs.GetValue() == 0) {
+    return lhs;
+  }
+
+  // Flattening and term collection
+  std::map<SymbolicExpr, int64_t, SymbolicExprMapCompare> terms;
+  ExtractTerms(lhs, terms);
+  ExtractTerms(rhs, terms);
+
+  std::vector<SymbolicExpr> exprs;
+  int64_t const_val = 0;
+
+  for (auto const& [base, coeff] : terms) {
+    if (coeff == 0) {
+      continue;
+    }
+    if (base.GetType() == SymbolicExprType::kConstant) {
+      const_val += base.GetValue() * coeff;
+    } else {
+      exprs.push_back((base * coeff).Canonicalize());
+    }
+  }
+
+  // Add the combined constant term as an expression
+  if (const_val != 0) {
+    exprs.push_back(ctx->CreateConstant(const_val));
+  }
+
+  if (exprs.empty()) {
+    return ctx->CreateConstant(0);
+  }
+
+  // Sort all terms, including the constant
+  std::sort(exprs.begin(), exprs.end(), CompareSymbolicExpr);
+
+  SymbolicExpr result = exprs[0];
+  for (size_t i = 1; i < exprs.size(); ++i) {
+    result = ctx->CreateBinaryOp(SymbolicExprType::kAdd, result, exprs[i]);
+  }
+  return result;
+}
+
+SymbolicExpr CanonicalizeMul(SymbolicExpr lhs, SymbolicExpr rhs) {
+  SymbolicExprContext* ctx = lhs.GetContext();
+
+  // Commutativity: C * X => X * C
+  if (lhs.GetType() == SymbolicExprType::kConstant) {
+    std::swap(lhs, rhs);
+  }
+
+  // Neutral Elements
+  if (rhs.GetType() == SymbolicExprType::kConstant) {
+    if (rhs.GetValue() == 0) {
+      return rhs;  // x * 0 = 0
+    }
+    if (rhs.GetValue() == 1) {
+      return lhs;  // x * 1 = x
+    }
+  }
+
+  // Associativity: (X * C1) * C2 => X * (C1 * C2)
+  if (lhs.GetType() == SymbolicExprType::kMul &&
+      lhs.GetRHS().GetType() == SymbolicExprType::kConstant &&
+      rhs.GetType() == SymbolicExprType::kConstant) {
+    return (lhs.GetLHS() * (lhs.GetRHS().GetValue() * rhs.GetValue()))
+        .Canonicalize();
+  }
+
+  // Distribute Mul over Add: (A + B) * C => (A * C) + (B * C)
+  if (lhs.GetType() == SymbolicExprType::kAdd) {
+    return ((lhs.GetLHS() * rhs) + (lhs.GetRHS() * rhs)).Canonicalize();
+  }
+  if (rhs.GetType() == SymbolicExprType::kAdd) {
+    return ((lhs * rhs.GetLHS()) + (lhs * rhs.GetRHS())).Canonicalize();
+  }
+
+  SymbolicExpr res_lhs = lhs, res_rhs = rhs;
+  if (CompareSymbolicExpr(res_rhs, res_lhs)) {
+    std::swap(res_lhs, res_rhs);
+  }
+  return ctx->CreateBinaryOp(SymbolicExprType::kMul, res_lhs, res_rhs);
+}
+
+std::optional<int64_t> SubtractAndGetConstDiff(SymbolicExpr lhs,
+                                               SymbolicExpr rhs) {
+  SymbolicExpr diff = (lhs - rhs).Canonicalize();
+  if (diff.GetType() == SymbolicExprType::kConstant) {
+    return diff.GetValue();
+  }
+  return std::nullopt;
+}
+
+SymbolicExpr CanonicalizeMin(SymbolicExpr lhs, SymbolicExpr rhs) {
+  SymbolicExprContext* ctx = lhs.GetContext();
+  if (auto diff = SubtractAndGetConstDiff(lhs, rhs)) {  // min(X, X + k) = X
+    return (diff.value() <= 0) ? lhs : rhs;
+  }
+
+  if (CompareSymbolicExpr(rhs, lhs)) {
+    std::swap(lhs, rhs);
+  }
+  return ctx->CreateBinaryOp(SymbolicExprType::kMin, lhs, rhs);
+}
+
+SymbolicExpr CanonicalizeMax(SymbolicExpr lhs, SymbolicExpr rhs) {
+  SymbolicExprContext* ctx = lhs.GetContext();
+  if (auto diff = SubtractAndGetConstDiff(lhs, rhs)) {  // max(X, X + k) = X + k
+    return (diff.value() >= 0) ? lhs : rhs;
+  }
+
+  if (CompareSymbolicExpr(rhs, lhs)) {
+    std::swap(lhs, rhs);
+  }
+  return ctx->CreateBinaryOp(SymbolicExprType::kMax, lhs, rhs);
+}
+
 }  // namespace
 
 class SymbolicExprStorage : public mlir::StorageUniquer::BaseStorage {
@@ -340,8 +536,44 @@ SymbolicExpr SymbolicExpr::ReplaceVariables(
   }
 }
 
-// TODO(b/433697083): Implement canonicalization.
-SymbolicExpr SymbolicExpr::Canonicalize() const { return *this; }
+SymbolicExpr SymbolicExpr::Canonicalize() const {
+  if (!*this) {
+    return *this;
+  }
+
+  SymbolicExprType type = GetType();
+  if (type == SymbolicExprType::kConstant ||
+      type == SymbolicExprType::kVariable) {
+    return *this;
+  }
+
+  SymbolicExpr lhs = this->GetLHS().Canonicalize();
+  SymbolicExpr rhs = this->GetRHS().Canonicalize();
+
+  if (lhs.GetType() == SymbolicExprType::kConstant &&
+      rhs.GetType() == SymbolicExprType::kConstant) {
+    return GetContext()->CreateConstant(
+        SymbolicExpr(GetContext()->CreateBinaryOp(type, lhs, rhs))
+            .Evaluate({}));
+  }
+
+  switch (type) {
+    case SymbolicExprType::kConstant:
+    case SymbolicExprType::kVariable:
+      return *this;
+    case SymbolicExprType::kAdd:
+      return CanonicalizeAdd(lhs, rhs);
+    case SymbolicExprType::kMul:
+      return CanonicalizeMul(lhs, rhs);
+    case SymbolicExprType::kMin:
+      return CanonicalizeMin(lhs, rhs);
+    case SymbolicExprType::kMax:
+      return CanonicalizeMax(lhs, rhs);
+    default:
+      // TODO(b/433693793): Implement canonicalization for other types.
+      return GetContext()->CreateBinaryOp(type, lhs, rhs);
+  }
+}
 
 SymbolicExpr SymbolicExpr::operator+(int64_t v) const {
   return *this + GetContext()->CreateConstant(v);
