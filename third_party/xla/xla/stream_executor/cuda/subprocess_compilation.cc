@@ -429,8 +429,13 @@ absl::StatusOr<std::vector<uint8_t>> BundleGpuAsmUsingFatbin(
   }
   assert(images.size() == image_paths.size());
   for (int i = 0; i < images.size(); i++) {
+    absl::string_view extension =
+        ShouldUsePtxExtension(images[i].cc) ? "a" : "";
+    absl::string_view kind = images[i].is_ptx ? "ptx" : "elf";
     fatbinary_args.push_back(absl::StrFormat(
-        "--image=profile=%s,file=%s", images[i].profile, image_paths[i]));
+        "--image3=kind=%s,sm=%s,file=%s", kind,
+        absl::StrCat(images[i].cc.major, images[i].cc.minor, extension),
+        image_paths[i]));
   }
   if (VLOG_IS_ON(3)) {
     VLOG(3) << absl::StrJoin(fatbinary_args, " ");

@@ -179,7 +179,7 @@ class GpuKernelToBlobPass
         auto gpu_asm = tensorflow::se::CompileGpuAsm(cc, ptx, gpu_asm_opts);
         if (gpu_asm.ok()) {
           images.push_back(
-              {absl::StrCat("sm_", arch), std::move(gpu_asm.value())});
+              {.is_ptx = false, .cc = cc, .bytes = std::move(gpu_asm.value())});
         } else {
 #ifdef PLATFORM_GOOGLE
           // Require compilation with ptxas.
@@ -198,7 +198,7 @@ class GpuKernelToBlobPass
         std::copy(ptx.begin(), ptx.end(), std::back_inserter(ptx_bytes));
         ptx_bytes.push_back('\0');
         images.push_back(
-            {absl::StrCat("compute_", arch), std::move(ptx_bytes)});
+            {.is_ptx = true, .cc = cc, .bytes = std::move(ptx_bytes)});
       }
     }
 

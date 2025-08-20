@@ -1387,6 +1387,7 @@ xla_test(
 cc_library(
     name = "cubin_or_ptx_image",
     hdrs = ["cubin_or_ptx_image.h"],
+    deps = [":cuda_compute_capability"],
 )
 
 cc_library(
@@ -1474,6 +1475,21 @@ stage_in_bin_subdirectory(
     name = "nvdisasm",
     testonly = True,
     data = [":dummy_cuda_binary"],
+)
+
+xla_cc_test(
+    name = "subprocess_compilation_no_fakes_test",
+    srcs = ["subprocess_compilation_no_fakes_test.cc"],
+    deps = [
+        ":subprocess_compilation",
+        "//xla/stream_executor:semantic_version",
+        "@com_google_absl//absl/status",
+        "@com_google_googletest//:gtest_main",
+        "@local_tsl//tsl/platform:path",
+        "@local_tsl//tsl/platform:status_matchers",
+        "@local_tsl//tsl/platform:statusor",
+        "@local_tsl//tsl/platform:test",
+    ],
 )
 
 xla_cc_test(
