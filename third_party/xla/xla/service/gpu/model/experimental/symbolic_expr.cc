@@ -21,6 +21,8 @@ limitations under the License.
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numeric>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -53,7 +55,7 @@ std::string GetBinaryOpString(SymbolicExprType type) {
     case SymbolicExprType::kCeilDiv:
       return "ceildiv";
     case SymbolicExprType::kMod:
-      return "mod";
+      return "%";
     case SymbolicExprType::kMax:
       return "max";
     case SymbolicExprType::kMin:
@@ -198,10 +200,6 @@ std::pair<SymbolicExpr, int64_t> GetBaseAndCoeff(SymbolicExpr expr) {
       auto [base, coeff] = GetBaseAndCoeff(lhs);
       return {base, coeff * rhs.GetValue()};
     }
-    if (lhs.GetType() == SymbolicExprType::kConstant) {
-      auto [base, coeff] = GetBaseAndCoeff(rhs);
-      return {base, coeff * lhs.GetValue()};
-    }
   }
   return {expr, 1};
 }
@@ -220,19 +218,6 @@ void ExtractTerms(SymbolicExpr expr,
 
 SymbolicExpr CanonicalizeAdd(SymbolicExpr lhs, SymbolicExpr rhs) {
   SymbolicExprContext* ctx = lhs.GetContext();
-
-  // Constant folding
-  if (lhs.GetType() == SymbolicExprType::kConstant &&
-      rhs.GetType() == SymbolicExprType::kConstant) {
-    return ctx->CreateConstant(lhs.GetValue() + rhs.GetValue());
-  }
-  // Neutral element
-  if (lhs.GetType() == SymbolicExprType::kConstant && lhs.GetValue() == 0) {
-    return rhs;
-  }
-  if (rhs.GetType() == SymbolicExprType::kConstant && rhs.GetValue() == 0) {
-    return lhs;
-  }
 
   // Flattening and term collection
   llvm::SmallVector<std::pair<SymbolicExpr, int64_t>> terms;
@@ -285,16 +270,6 @@ SymbolicExpr CanonicalizeAdd(SymbolicExpr lhs, SymbolicExpr rhs) {
 SymbolicExpr CanonicalizeMul(SymbolicExpr lhs, SymbolicExpr rhs) {
   SymbolicExprContext* ctx = lhs.GetContext();
 
-  if (lhs.GetType() == SymbolicExprType::kConstant &&
-      rhs.GetType() == SymbolicExprType::kConstant) {
-    return ctx->CreateConstant(lhs.GetValue() * rhs.GetValue());
-  }
-
-  // Commutativity: C * X => X * C
-  if (lhs.GetType() == SymbolicExprType::kConstant) {
-    std::swap(lhs, rhs);
-  }
-
   // Neutral Elements
   if (rhs.GetType() == SymbolicExprType::kConstant) {
     if (rhs.GetValue() == 0) {
@@ -321,11 +296,211 @@ SymbolicExpr CanonicalizeMul(SymbolicExpr lhs, SymbolicExpr rhs) {
     return ((lhs * rhs.GetLHS()) + (lhs * rhs.GetRHS())).Canonicalize();
   }
 
-  SymbolicExpr res_lhs = lhs, res_rhs = rhs;
-  if (res_rhs < res_lhs) {
-    std::swap(res_lhs, res_rhs);
+  return ctx->CreateBinaryOp(SymbolicExprType::kMul, lhs, rhs);
+}
+
+std::optional<int64_t> SubtractAndGetConstDiff(SymbolicExpr lhs,
+                                               SymbolicExpr rhs) {
+  SymbolicExpr diff = (lhs - rhs).Canonicalize();
+  if (diff.GetType() == SymbolicExprType::kConstant) {
+    return diff.GetValue();
   }
-  return ctx->CreateBinaryOp(SymbolicExprType::kMul, res_lhs, res_rhs);
+  return std::nullopt;
+}
+
+SymbolicExpr CanonicalizeMin(SymbolicExpr lhs, SymbolicExpr rhs) {
+  SymbolicExprContext* ctx = lhs.GetContext();
+  if (auto diff = SubtractAndGetConstDiff(lhs, rhs)) {  // min(X, X + k) = X
+    return (diff.value() <= 0) ? lhs : rhs;
+  }
+
+  return ctx->CreateBinaryOp(SymbolicExprType::kMin, lhs, rhs);
+}
+
+SymbolicExpr CanonicalizeMax(SymbolicExpr lhs, SymbolicExpr rhs) {
+  SymbolicExprContext* ctx = lhs.GetContext();
+  if (auto diff = SubtractAndGetConstDiff(lhs, rhs)) {  // max(X, X + k) = X + k
+    return (diff.value() >= 0) ? lhs : rhs;
+  }
+
+  return ctx->CreateBinaryOp(SymbolicExprType::kMax, lhs, rhs);
+}
+
+// Helper function to simplify (Term * C1) op DivisorC using GCD.
+// Returns the new expression if simplification occurs, otherwise returns an
+// empty SymbolicExpr.
+SymbolicExpr TrySimplifyDivModByGCD(SymbolicExprType op_type, SymbolicExpr lhs,
+                                    int64_t divisor) {
+  if (lhs.GetType() != SymbolicExprType::kMul) {
+    return SymbolicExpr();
+  }
+  SymbolicExpr mul_lhs = lhs.GetLHS();
+  SymbolicExpr mul_rhs = lhs.GetRHS();
+
+  // mul_lhs can't be a constant because lhs is already canonicalized
+  // and constants are on the RHS.
+  if (mul_rhs.GetType() != SymbolicExprType::kConstant) {
+    return SymbolicExpr();
+  }
+
+  int64_t mul_rhs_val = mul_rhs.GetValue();
+  int64_t gcd = std::gcd(std::abs(mul_rhs_val), std::abs(divisor));
+
+  if (gcd <= 1) {  // common is never 0 because divisor is non-zero
+    return SymbolicExpr();
+  }
+
+  SymbolicExpr new_lhs = mul_lhs * (mul_rhs_val / gcd);
+  int64_t new_divisor = divisor / gcd;
+
+  switch (op_type) {
+    case SymbolicExprType::kFloorDiv: {
+      return (new_lhs / new_divisor).Canonicalize();
+    }
+    case SymbolicExprType::kCeilDiv: {
+      return new_lhs.ceilDiv(new_divisor).Canonicalize();
+    }
+    case SymbolicExprType::kMod: {
+      // (A * C1) mod C2 = ((A * (C1 / g)) mod (C2 / g)) * g
+      return (((mul_lhs * (mul_rhs_val / gcd)) % (divisor / gcd)) * gcd)
+          .Canonicalize();
+    }
+    default: {
+      LOG(FATAL) << "Unsupported op_type in TrySimplifyDivModByGCD";
+    }
+  }
+}
+
+// Helper function to simplify (op + other_op) floordiv divisor.
+SymbolicExpr SimplifyFloorDivAddOperand(SymbolicExpr op, SymbolicExpr other_op,
+                                        int64_t divisor) {
+  if (op.GetType() == SymbolicExprType::kMul) {
+    SymbolicExpr mul_lhs = op.GetLHS();
+    SymbolicExpr mul_rhs = op.GetRHS();
+
+    // mul_lhs can't be a constant because lhs is already canonicalized.
+    if (mul_rhs.GetType() != SymbolicExprType::kConstant) {
+      return SymbolicExpr();
+    }
+
+    int64_t mul_rhs_val = mul_rhs.GetValue();
+    if (mul_rhs_val != 0 && (mul_rhs_val % divisor == 0)) {
+      return ((mul_lhs * (mul_rhs_val / divisor)) + other_op.floorDiv(divisor))
+          .Canonicalize();
+    }
+  } else if (op.GetType() == SymbolicExprType::kConstant) {
+    if (op.GetValue() % divisor == 0) {
+      return ((other_op.floorDiv(divisor)) + (op.GetValue() / divisor))
+          .Canonicalize();
+    }
+  }
+  return SymbolicExpr();  // Cannot simplify
+}
+
+SymbolicExpr CanonicalizeFloorDiv(SymbolicExpr lhs, SymbolicExpr rhs) {
+  SymbolicExprContext* ctx = lhs.GetContext();
+
+  if (lhs.GetType() == SymbolicExprType::kConstant && lhs.GetValue() == 0) {
+    return lhs;  // 0 floordiv X => 0
+  }
+
+  if (rhs.GetType() == SymbolicExprType::kConstant) {
+    int64_t divisor = rhs.GetValue();
+    CHECK_NE(divisor, 0) << "Division by zero";
+    if (divisor == 1) {
+      return lhs;
+    }
+    if (divisor == -1) {
+      return -lhs;
+    }
+
+    SymbolicExpr gcd_simplified =
+        TrySimplifyDivModByGCD(SymbolicExprType::kFloorDiv, lhs, divisor);
+    if (gcd_simplified) {
+      return gcd_simplified;
+    }
+
+    // Distributivity for (A + C1) floordiv C2 where C1 % C2 == 0
+    if (lhs.GetType() == SymbolicExprType::kAdd) {
+      SymbolicExpr add_lhs = lhs.GetLHS();
+      SymbolicExpr add_rhs = lhs.GetRHS();
+
+      if (auto simplified =
+              SimplifyFloorDivAddOperand(add_lhs, add_rhs, divisor)) {
+        return simplified;
+      }
+      if (auto simplified =
+              SimplifyFloorDivAddOperand(add_rhs, add_lhs, divisor)) {
+        return simplified;
+      }
+    }
+  }
+
+  return ctx->CreateBinaryOp(SymbolicExprType::kFloorDiv, lhs, rhs);
+}
+
+SymbolicExpr CanonicalizeCeilDiv(SymbolicExpr lhs, SymbolicExpr rhs) {
+  SymbolicExprContext* ctx = lhs.GetContext();
+
+  if (lhs.GetType() == SymbolicExprType::kConstant && lhs.GetValue() == 0) {
+    return lhs;  // 0 ceildiv X => 0
+  }
+
+  if (rhs.GetType() == SymbolicExprType::kConstant) {
+    int64_t divisor = rhs.GetValue();
+    CHECK_NE(divisor, 0) << "Division by zero";
+    if (divisor == 1) {
+      return lhs;
+    }
+    if (divisor == -1) {
+      return -lhs;
+    }
+
+    SymbolicExpr gcd_simplified =
+        TrySimplifyDivModByGCD(SymbolicExprType::kCeilDiv, lhs, divisor);
+    if (gcd_simplified) {
+      return gcd_simplified;
+    }
+
+    if (divisor > 0) {
+      return ((lhs + divisor - 1).Canonicalize()).floorDiv(rhs).Canonicalize();
+    } else {
+      return (-(lhs.floorDiv(-divisor))).Canonicalize();
+    }
+  }
+
+  return ctx->CreateBinaryOp(SymbolicExprType::kCeilDiv, lhs, rhs);
+}
+
+SymbolicExpr CanonicalizeMod(SymbolicExpr lhs, SymbolicExpr rhs) {
+  SymbolicExprContext* ctx = lhs.GetContext();
+
+  if (lhs.GetType() == SymbolicExprType::kConstant && lhs.GetValue() == 0) {
+    return lhs;  // 0 mod X => 0
+  }
+
+  if (lhs == rhs) {
+    return ctx->CreateConstant(0);  // X mod X => 0
+  }
+
+  if (rhs.GetType() == SymbolicExprType::kConstant) {
+    int64_t divisor = rhs.GetValue();
+    CHECK_NE(divisor, 0) << "Modulo by zero";
+
+    if (SymbolicExpr gcd_simplified =
+            TrySimplifyDivModByGCD(SymbolicExprType::kMod, lhs, divisor)) {
+      return gcd_simplified;
+    }
+  }
+
+  // Fallback: A mod B = A - (A floordiv B) * B
+  SymbolicExpr floor_div_expr = lhs.floorDiv(rhs).Canonicalize();
+  if (floor_div_expr.GetType() == SymbolicExprType::kConstant &&
+      floor_div_expr.GetValue() == 0) {
+    return lhs;  // If A floordiv B is 0, then A mod B is A
+  }
+  SymbolicExpr product = (floor_div_expr * rhs).Canonicalize();
+  return (lhs - product).Canonicalize();
 }
 
 }  // namespace
@@ -518,19 +693,54 @@ SymbolicExpr SymbolicExpr::Canonicalize() const {
     return *this;
   }
 
-  switch (GetType()) {
-    case SymbolicExprType::kConstant:
-    case SymbolicExprType::kVariable:
-      return *this;
+  SymbolicExprType type = GetType();
+  if (type == SymbolicExprType::kConstant ||
+      type == SymbolicExprType::kVariable) {
+    return *this;
+  }
+
+  SymbolicExpr lhs = this->GetLHS().Canonicalize();
+  SymbolicExpr rhs = this->GetRHS().Canonicalize();
+
+  // If both sides are constants, we can evaluate the expression.
+  if (lhs.GetType() == SymbolicExprType::kConstant &&
+      rhs.GetType() == SymbolicExprType::kConstant) {
+    return GetContext()->CreateConstant(
+        SymbolicExpr(GetContext()->CreateBinaryOp(type, lhs, rhs))
+            .Evaluate({}));
+  }
+
+  // Assure constants are on the RHS for commutative operations.
+  switch (type) {
     case SymbolicExprType::kAdd:
-      return CanonicalizeAdd(this->GetLHS().Canonicalize(),
-                             this->GetRHS().Canonicalize());
     case SymbolicExprType::kMul:
-      return CanonicalizeMul(this->GetLHS().Canonicalize(),
-                             this->GetRHS().Canonicalize());
+    case SymbolicExprType::kMin:
+    case SymbolicExprType::kMax:
+      if (rhs < lhs) {
+        std::swap(lhs, rhs);
+      }
+      break;
     default:
-      // TODO(b/433693793): Implement canonicalization for other types.
-      return *this;
+      break;
+  }
+
+  switch (type) {
+    case SymbolicExprType::kAdd:
+      return CanonicalizeAdd(lhs, rhs);
+    case SymbolicExprType::kMul:
+      return CanonicalizeMul(lhs, rhs);
+    case SymbolicExprType::kMin:
+      return CanonicalizeMin(lhs, rhs);
+    case SymbolicExprType::kMax:
+      return CanonicalizeMax(lhs, rhs);
+    case SymbolicExprType::kFloorDiv:
+      return CanonicalizeFloorDiv(lhs, rhs);
+    case SymbolicExprType::kCeilDiv:
+      return CanonicalizeCeilDiv(lhs, rhs);
+    case SymbolicExprType::kMod:
+      return CanonicalizeMod(lhs, rhs);
+    default:
+      LOG(FATAL) << "Canonicalize not implemented for this expression type.";
   }
 }
 
@@ -538,13 +748,11 @@ SymbolicExpr SymbolicExpr::operator+(int64_t v) const {
   return *this + GetContext()->CreateConstant(v);
 }
 SymbolicExpr SymbolicExpr::operator+(SymbolicExpr other) const {
-  // TODO(b/433693793): This should be modified when we introduce the
-  // simplification logic.
   return GetContext()->CreateBinaryOp(SymbolicExprType::kAdd, *this, other);
 }
 
 SymbolicExpr SymbolicExpr::operator-() const {
-  return *this * GetContext()->CreateConstant(-1);
+  return (*this * GetContext()->CreateConstant(-1)).Canonicalize();
 }
 SymbolicExpr SymbolicExpr::operator-(int64_t v) const { return *this + (-v); }
 SymbolicExpr SymbolicExpr::operator-(SymbolicExpr other) const {
