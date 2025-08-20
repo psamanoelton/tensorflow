@@ -40,6 +40,7 @@ limitations under the License.
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/device_memory_allocator.h"
+#include "xla/stream_executor/gpu/gpu_blas_lt.h"
 #include "xla/stream_executor/stream_executor.h"
 #include "xla/stream_executor/stream_executor_memory_allocator.h"
 #include "xla/tsl/platform/errors.h"
@@ -74,27 +75,43 @@ CublasBackend::GetSupportedConfigs(const HloInstruction& instr) {
           &instr, backend_config,
           target_config().device_description.gpu_compute_capability()));
 
-  TF_ASSIGN_OR_RETURN(RedzoneBuffers rz_buffers,
-                      RedzoneBuffers::FromInstruction(
-                          instr, allocator.get(), stream,
-                          RedzoneBuffers::kAllInputsAllOutputs, true, true,
-                          instr.GetModule()
-                              ->config()
-                              .debug_options()
-                              .xla_gpu_redzone_padding_bytes()));
+  auto create_matrix_desc = [](const se::gpu::MatrixLayout& layout)
+      -> absl::StatusOr<se::gpu::MatrixDescriptor> {
+    TF_ASSIGN_OR_RETURN(se::blas::DataType type,
+                        se::gpu::AsBlasDataType(layout.dtype));
+    return se::gpu::MatrixDescriptor{
+        /*data=*/se::DeviceMemoryBase(), layout.leading_dim_stride,
+        layout.batch_stride, type,
+        // BLAS is column-major by default.
+        (layout.order == se::gpu::MatrixLayout::Order::kColumnMajor
+             ? se::blas::Transpose::kNoTranspose
+             : se::blas::Transpose::kTranspose)};
+  };
 
+  TF_ASSIGN_OR_RETURN(se::gpu::MatrixDescriptor lhs_desc,
+                      create_matrix_desc(gemm_config.lhs_layout));
+  TF_ASSIGN_OR_RETURN(se::gpu::MatrixDescriptor rhs_desc,
+                      create_matrix_desc(gemm_config.rhs_layout));
+  TF_ASSIGN_OR_RETURN(se::gpu::MatrixDescriptor output_desc_base,
+                      create_matrix_desc(gemm_config.output_layout));
+
+  se::gpu::OutputMatrixDescriptor out_desc(std::move(output_desc_base));
+  out_desc.batch_size = gemm_config.output_layout.batch_size;
+  out_desc.m = gemm_config.output_layout.num_rows;
+  out_desc.n = gemm_config.output_layout.num_cols;
+  out_desc.k = gemm_config.lhs_layout.num_cols;
   TF_ASSIGN_OR_RETURN(
-      GemmConfig::DescriptorsTuple desc,
-      gemm_config.GetMatrixDescriptors(rz_buffers.input_buffers().at(0),
-                                       rz_buffers.input_buffers().at(1),
-                                       rz_buffers.output_buffers().at(0)));
+      out_desc.compute_type,
+      se::gpu::GetBlasComputationType(
+          gemm_config.precision_algorithm, gemm_config.lhs_layout.dtype,
+          gemm_config.output_layout.dtype, gemm_config.compute_precision));
 
   se::blas::BlasSupport* blas = stream_executor()->AsBlas();
   if (blas == nullptr) {
     return absl::InternalError("Failed to getBlas support.");
   }
   std::vector<se::blas::AlgorithmType> algorithms;
-  blas->GetBlasGemmAlgorithms(stream, desc.lhs, desc.rhs, &desc.output,
+  blas->GetBlasGemmAlgorithms(stream, lhs_desc, rhs_desc, &out_desc,
                               &gemm_config.alpha, &gemm_config.beta,
                               &algorithms);
 
