@@ -1,0 +1,16 @@
+toc:
+- heading: Megascale debugging playbook
+- title: Introduction
+  path: /megascale
+- title: Overview
+  path: /megascale/playbook_overview
+- title: Getting started
+  section:
+  - title: Debugging Megascale
+    path: /megascale/debugging_workflow
+  - title: Hang
+    path: /megascale/hangs
+  - title: XProf
+    path: /megascale/debugging_with_xprof
+  - title: Slowness
+    path: /megascale/slowness
