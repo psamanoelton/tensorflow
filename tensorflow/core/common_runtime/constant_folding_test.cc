@@ -707,7 +707,7 @@ class TestTFEnvironment : public ::tensorflow::EnvWrapper {
   using tf_base = ::tensorflow::EnvWrapper;
   TestTFEnvironment() : ::tensorflow::EnvWrapper(Default()) {}
   absl::Status GetFileSystemForFile(
-      const string& fname, ::tensorflow::FileSystem** result) override {
+      absl::string_view fname, ::tensorflow::FileSystem** result) override {
     was_used_ = true;
     if (fname == "test://test") {
       *result = &test_filesystem_;
