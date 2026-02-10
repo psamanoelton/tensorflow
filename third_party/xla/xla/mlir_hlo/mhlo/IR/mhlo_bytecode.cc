@@ -190,6 +190,9 @@ enum AttributeCode {
   //   ulps: svarint
   // }
   kResultAccuracyAttr = 18,
+  kReplicaGroupV3Attr = 19,
+  kSubAxisInfoAttr = 20,
+  kAxisRefAttr = 21,
 };
 
 /// This enum contains marker codes used to indicate which type is
@@ -272,6 +275,10 @@ class MhloBytecodeInterface : public BytecodeDialectInterface {
   TransposeAttr readTransposeAttr(DialectBytecodeReader &reader) const;
   TypeExtensionsAttr readTypeExtensionsAttr(
       DialectBytecodeReader &reader) const;
+  ReplicaGroupV3Attr readReplicaGroupV3Attr(
+      DialectBytecodeReader& reader) const;
+  AxisRefAttr readAxisRefAttr(DialectBytecodeReader& reader) const;
+  SubAxisInfoAttr readSubAxisInfoAttr(DialectBytecodeReader& reader) const;
 
   // TO ADD ATTRIBUTE: Include a write method for each attribute in StableHLO
   // Ex: void write(SomeAttr attr, DialectBytecodeWriter &writer) const;
@@ -297,6 +304,9 @@ class MhloBytecodeInterface : public BytecodeDialectInterface {
              DialectBytecodeWriter &writer) const;
   void write(TransposeAttr attr, DialectBytecodeWriter &writer) const;
   void write(TypeExtensionsAttr attr, DialectBytecodeWriter &writer) const;
+  void write(ReplicaGroupV3Attr attr, DialectBytecodeWriter& writer) const;
+  void write(AxisRefAttr attr, DialectBytecodeWriter& writer) const;
+  void write(SubAxisInfoAttr attr, DialectBytecodeWriter& writer) const;
 
   //===--------------------------------------------------------------------===//
   // Types
@@ -368,6 +378,12 @@ Attribute MhloBytecodeInterface::readAttribute(
       return readTransposeAttr(reader);
     case mhlo_encoding::kTypeExtensionsAttr:
       return readTypeExtensionsAttr(reader);
+    case mhlo_encoding::kReplicaGroupV3Attr:
+      return readReplicaGroupV3Attr(reader);
+    case mhlo_encoding::kAxisRefAttr:
+      return readAxisRefAttr(reader);
+    case mhlo_encoding::kSubAxisInfoAttr:
+      return readSubAxisInfoAttr(reader);
 
     default:
       reader.emitError() << "unknown mhlo attribute code: " << code;
@@ -611,7 +627,8 @@ LogicalResult MhloBytecodeInterface::writeAttribute(
             GatherDimensionNumbersAttr, OutputOperandAliasAttr, PrecisionAttr,
             ResultAccuracyAttr, ResultAccuracyModeAttr, RngAlgorithmAttr,
             RngDistributionAttr, ScatterDimensionNumbersAttr, TransposeAttr,
-            TypeExtensionsAttr>([&](auto attr) {
+            TypeExtensionsAttr, ReplicaGroupV3Attr, AxisRefAttr,
+            SubAxisInfoAttr>([&](auto attr) {
         LOG_WRITE_CALL;
         write(attr, writer);
         return success();
@@ -764,6 +781,82 @@ void MhloBytecodeInterface::write(TypeExtensionsAttr attr,
                                   DialectBytecodeWriter &writer) const {
   writer.writeVarInt(mhlo_encoding::kTypeExtensionsAttr);
   writer.writeSignedVarInts(attr.getBounds());
+}
+
+ReplicaGroupV3Attr MhloBytecodeInterface::readReplicaGroupV3Attr(
+    DialectBytecodeReader& reader) const {
+  LOG_READ_CALL;
+  Attribute meshName;
+  llvm::SmallVector<Attribute> axes;
+
+  if (failed(reader.readAttribute(meshName)) ||
+      failed(reader.readAttributes(axes))) {
+    return ReplicaGroupV3Attr();
+  }
+
+  return ReplicaGroupV3Attr::get(getContext(),
+                                 llvm::cast<FlatSymbolRefAttr>(meshName),
+                                 ArrayAttr::get(getContext(), axes));
+}
+
+AxisRefAttr MhloBytecodeInterface::readAxisRefAttr(
+    DialectBytecodeReader& reader) const {
+  LOG_READ_CALL;
+  llvm::StringRef name;
+  bool hasSubAxisInfo;
+  Attribute subAxisInfo;
+
+  if (failed(reader.readString(name)) ||
+      failed(reader.readBool(hasSubAxisInfo))) {
+    return AxisRefAttr();
+  }
+  if (hasSubAxisInfo) {
+    if (failed(reader.readAttribute(subAxisInfo))) {
+      return AxisRefAttr();
+    }
+  }
+
+  return AxisRefAttr::get(getContext(), name,
+                          llvm::cast_or_null<SubAxisInfoAttr>(subAxisInfo));
+}
+
+SubAxisInfoAttr MhloBytecodeInterface::readSubAxisInfoAttr(
+    DialectBytecodeReader& reader) const {
+  LOG_READ_CALL;
+  int64_t preSize;
+  int64_t size;
+
+  if (failed(reader.readSignedVarInt(preSize)) ||
+      failed(reader.readSignedVarInt(size))) {
+    return SubAxisInfoAttr();
+  }
+
+  return SubAxisInfoAttr::get(getContext(), preSize, size);
+}
+
+void MhloBytecodeInterface::write(ReplicaGroupV3Attr attr,
+                                  DialectBytecodeWriter& writer) const {
+  writer.writeVarInt(mhlo_encoding::kReplicaGroupV3Attr);
+  writer.writeAttribute(attr.getMeshName());
+  writer.writeAttributes(attr.getAxes().getValue());
+}
+
+void MhloBytecodeInterface::write(AxisRefAttr attr,
+                                  DialectBytecodeWriter& writer) const {
+  writer.writeVarInt(mhlo_encoding::kAxisRefAttr);
+  writer.writeOwnedString(attr.getName());
+  bool hasSubAxisInfo = (bool)attr.getSubAxisInfo();
+  writer.writeOwnedBool(hasSubAxisInfo);
+  if (hasSubAxisInfo) {
+    writer.writeAttribute(attr.getSubAxisInfo());
+  }
+}
+
+void MhloBytecodeInterface::write(SubAxisInfoAttr attr,
+                                  DialectBytecodeWriter& writer) const {
+  writer.writeVarInt(mhlo_encoding::kSubAxisInfoAttr);
+  writer.writeSignedVarInt(attr.getPreSize());
+  writer.writeSignedVarInt(attr.getSize());
 }
 
 //===----------------------------------------------------------------------===//
