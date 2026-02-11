@@ -1820,6 +1820,7 @@ cc_library(
         "//xla/service:collective_pipeliner",
         "//xla/service:collective_pipeliner_utils",
         "//xla/service:collective_utils",
+        "//xla/service:compilation_stats",
         "//xla/service:compiled_module",
         "//xla/service:compiler",
         "//xla/service:conditional_simplifier",
