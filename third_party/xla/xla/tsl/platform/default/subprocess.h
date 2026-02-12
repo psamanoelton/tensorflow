@@ -130,6 +130,16 @@ class SubProcess {
   void ClosePipes() TF_EXCLUSIVE_LOCKS_REQUIRED(data_mu_);
   bool WaitInternal(int* status);
 
+  // Returns kStillRunning if still running, kExited if exited, kNotRunning if
+  // not running. If returns kExited, *status is filled with the exit status.
+  // Will not block if flags is WNOHANG.
+  enum class WaitStatus {
+    kStillRunning = 0,
+    kExited = 1,
+    kNotRunning = 2,
+  };
+  WaitStatus WaitOrCheckRunningInternal(int flags, int* status);
+
   // The separation between proc_mu_ and data_mu_ mutexes allows Kill() to be
   // called by a thread while another thread is inside Wait() or Communicate().
   mutable absl::Mutex proc_mu_;
