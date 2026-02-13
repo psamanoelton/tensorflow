@@ -1525,7 +1525,13 @@ absl::Status ShapeVerifier::HandleFusion(HloInstruction* fusion) {
         ShapeUtil::GetSubshape(casted_fusion->shape(), pair.first);
     const Shape& operand_subshape = ShapeUtil::GetSubshape(
         casted_fusion->operand(pair.second.first)->shape(), pair.second.second);
+    bool is_dead = casted_fusion->parent() != nullptr &&
+                   casted_fusion->parent()->IsDeadComputation();
+    if (is_dead) {
+      continue;
+    }
     if (opts_.layout_sensitive) {
+      // Cannot find fusion because it is dead.
       if (casted_fusion->IsFused()) {
         // Nested fusions can have aliasing that does not require the
         // tiling/memory space assignment to be the same in order to alias.
