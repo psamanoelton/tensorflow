@@ -161,6 +161,13 @@ mlir::FailureOr<ShardingParam> ShardingParam::ParseV1(
     return mlir::failure();
   }
 
+  llvm::SmallVector<uint8_t> is_unreduced;
+  if (ods_parser.parseOptionalKeyword("with unreduced")) {
+    is_unreduced.resize(axis_sizes_64.size(), 1);
+  } else {
+    is_unreduced.resize(axis_sizes_64.size(), 0);
+  }
+
   minor_to_major.axis_sizes.reserve(axis_sizes_64.size());
   for (int64_t size : axis_sizes_64) {
     minor_to_major.axis_sizes.push_back(size);
@@ -170,7 +177,8 @@ mlir::FailureOr<ShardingParam> ShardingParam::ParseV1(
   // std::vector<int64_t>. ShardingParam has Python bindings, so we do not want
   // its constructor to expose a SmallVector.
   return ShardingParam(std::vector(dim_shards.begin(), dim_shards.end()),
-                       std::move(minor_to_major));
+                       std::move(minor_to_major),
+                       std::vector(is_unreduced.begin(), is_unreduced.end()));
 }
 
 void ShardingParam::PrintV1(mlir::AsmPrinter& ods_printer,
@@ -204,6 +212,17 @@ absl::Status ShardingParam::verify() const {
         "Can't shard the dims ", absl::StrJoin(dim_shards(), "x"),
         " to the mesh of [", absl::StrJoin(minor_to_major().permutation, ","),
         "] on ", absl::StrJoin(minor_to_major().axis_sizes, "x")));
+  }
+  if (is_unreduced().size() != minor_to_major().axis_sizes.size()) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "`is_unreduced` has different size from `axis_sizes`. ",
+        is_unreduced().size(), " vs ", minor_to_major().axis_sizes.size()));
+  }
+  for (uint8_t is_unreduced : is_unreduced()) {
+    if (is_unreduced != 0 && is_unreduced != 1) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "`is_unreduced` elements must be 0 or 1. Saw: ", is_unreduced));
+    }
   }
   return absl::OkStatus();
 }
@@ -319,7 +338,10 @@ absl::StatusOr<ShardingParam> ShardingParam::FromProto(
                                    proto.axis_sizes().end());
   std::vector<int64_t> dim_shards(proto.dim_shards().begin(),
                                   proto.dim_shards().end());
-  return ShardingParam(std::move(dim_shards), std::move(minor_to_major));
+  std::vector<uint8_t> is_unreduced(proto.is_unreduced().begin(),
+                                    proto.is_unreduced().end());
+  return ShardingParam(std::move(dim_shards), std::move(minor_to_major),
+                       std::move(is_unreduced));
 }
 
 absl::Status ShardingParam::ToProto(ShardingParamProto& proto,
@@ -337,6 +359,8 @@ absl::Status ShardingParam::ToProto(ShardingParamProto& proto,
                                    minor_to_major().permutation.end());
   proto.mutable_axis_sizes()->Add(minor_to_major().axis_sizes.begin(),
                                   minor_to_major().axis_sizes.end());
+  proto.mutable_is_unreduced()->Add(is_unreduced().begin(),
+                                    is_unreduced().end());
   return absl::OkStatus();
 }
 

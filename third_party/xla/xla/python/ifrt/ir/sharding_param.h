@@ -74,6 +74,8 @@ namespace ifrt {
 //   is invalid, because the 2 slices on dim-1 can't be distributed to 3 devices
 //   in axis-0.
 //
+// TODO doc unreduced
+//
 // See `support` directory for conversions with other sharding annotations.
 class ShardingParam {
  public:
@@ -100,7 +102,15 @@ class ShardingParam {
 
   ShardingParam(std::vector<int64_t> dim_shards, MinorToMajor minor_to_major)
       : dim_shards_(std::move(dim_shards)),
-        minor_to_major_(std::move(minor_to_major)) {}
+        minor_to_major_(std::move(minor_to_major)),
+        is_unreduced_(
+            std::vector<uint8_t>(minor_to_major_.axis_sizes.size(), 0)) {}
+
+  ShardingParam(std::vector<int64_t> dim_shards, MinorToMajor minor_to_major,
+                std::vector<uint8_t> is_unreduced)
+      : dim_shards_(std::move(dim_shards)),
+        minor_to_major_(std::move(minor_to_major)),
+        is_unreduced_(std::move(is_unreduced)) {}
 
   static mlir::FailureOr<ShardingParam> Parse(mlir::AsmParser& ods_parser);
 
@@ -134,6 +144,10 @@ class ShardingParam {
   llvm::ArrayRef<int64_t> dim_shards() const { return dim_shards_; }
   const MinorToMajor& minor_to_major() const { return minor_to_major_; }
 
+  // Returns whether the array is unreduced on the mesh axes. The element types
+  // are effectively bool, but we use uint8_t for llvm::ArrayRef compatibility.
+  llvm::ArrayRef<uint8_t> is_unreduced() const { return is_unreduced_; }
+
   bool operator==(const ShardingParam& other) const {
     return dim_shards_ == other.dim_shards_ &&
            minor_to_major_ == other.minor_to_major_;
@@ -144,14 +158,15 @@ class ShardingParam {
   }
 
   llvm::hash_code hash_value() const {
-    return llvm::hash_combine(dim_shards(),
-                              llvm::ArrayRef<int>(minor_to_major_.permutation),
-                              llvm::ArrayRef<int>(minor_to_major_.axis_sizes));
+    return llvm::hash_combine(
+        dim_shards(), llvm::ArrayRef<int>(minor_to_major_.permutation),
+        llvm::ArrayRef<int>(minor_to_major_.axis_sizes), is_unreduced());
   }
 
   template <typename H>
   friend H AbslHashValue(H h, const ShardingParam& value) {
     h = H::combine(std::move(h), value.dim_shards_);
+    h = H::combine(std::move(h), value.is_unreduced_);
     h = H::combine_contiguous(std::move(h),
                               value.minor_to_major_.permutation.data(),
                               value.minor_to_major_.permutation.size());
@@ -182,6 +197,7 @@ class ShardingParam {
  private:
   std::vector<int64_t> dim_shards_;
   MinorToMajor minor_to_major_;
+  std::vector<uint8_t> is_unreduced_;
 };
 
 llvm::hash_code hash_value(ShardingParam sharding);

@@ -63,7 +63,18 @@ absl::StatusOr<OpSharding> ToOpSharding(
       }
     }
     if (all_dim_replicated) {
-      op_sharding.set_type(OpSharding::REPLICATED);
+      bool all_unreduced = true;
+      for (const uint8_t is_unreduced : sharding_param.is_unreduced()) {
+        if (is_unreduced == 0) {
+          all_unreduced = false;
+          break;
+        }
+      }
+      if (all_unreduced) {
+        op_sharding.set_type(OpSharding::UNREDUCED);
+      } else {
+        op_sharding.set_type(OpSharding::REPLICATED);
+      }
       return op_sharding;
     }
   }
@@ -104,6 +115,12 @@ absl::StatusOr<OpSharding> ToOpSharding(
     tile_assignment_devices->Add(
         device_mapping_devices[logical_device_id]->Id().value());
   }
+  for (const uint8_t is_unreduced : sharding_param.is_unreduced()) {
+    if (is_unreduced == 1) {
+      op_sharding.mutable_last_tile_dims()->Add(1);
+      break;
+    }
+  }
 
   return op_sharding;
 }
@@ -120,6 +137,16 @@ absl::StatusOr<HloSharding> ToHloSharding(const ShardingParam& sharding_param) {
   if (device_count == 1) {
     // Generate single-device sharding as TileMaximal.
     return HloSharding::Replicate();
+  }
+  bool sharding_is_unreduced = true;
+  for (const uint8_t is_unreduced : sharding_param.is_unreduced()) {
+    if (is_unreduced == 0) {
+      sharding_is_unreduced = false;
+      break;
+    }
+  }
+  if (sharding_is_unreduced) {
+    return HloSharding::Unreduced();
   }
   int64_t cum_size = 1;
   llvm::SmallVector<int64_t> dims;
@@ -153,16 +180,20 @@ absl::StatusOr<ShardingParam> ToShardingParam(const HloSharding& hlo_sharding,
   // of the same size, and specify how the shards are mapped over the axis in
   // `minor_to_major` order.
   ShardingParam::MinorToMajor minor_to_major;
-
-  if (hlo_sharding.IsReplicated() ||
+  if (hlo_sharding.IsReplicated() || hlo_sharding.IsUnreduced() ||
       (hlo_sharding.IsTileMaximal() && hlo_sharding.HasUniqueDevice() &&
        num_devices == 1)) {
     // Convert replicated or TileMaximal. Only single-device TileMaximal
     // conversion is supported.
+    std::vector<uint8_t> is_unreduced(1, 0);
+    if (hlo_sharding.IsUnreduced()) {
+      is_unreduced[0] = 1;
+    }
     std::vector<int64_t> dim_shards(rank, 1);
     minor_to_major.permutation.push_back(0);
     minor_to_major.axis_sizes.push_back(num_devices);
-    return ShardingParam(std::move(dim_shards), std::move(minor_to_major));
+    return ShardingParam(std::move(dim_shards), std::move(minor_to_major),
+                         std::move(is_unreduced));
   }
   if (hlo_sharding.IsTiled()) {
     const xla::TileAssignment& tile_assignment = hlo_sharding.tile_assignment();
