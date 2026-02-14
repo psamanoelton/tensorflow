@@ -150,13 +150,13 @@ class StreamExecutorGpuClient : public xla::PjRtStreamExecutorClient {
   // cross-host transfers API.
   absl::StatusOr<std::vector<Future<>>> CrossHostSendBuffers(
       absl::Span<PjRtBuffer* const> buffers,
-      absl::Span<const PjRtGlobalDeviceId> dst_global_device_ids,
+      absl::Span<const GlobalDeviceId> dst_global_device_ids,
       std::vector<CrossHostTransferKey> transfer_keys) override;
 
   absl::StatusOr<std::vector<std::unique_ptr<PjRtBuffer>>>
   CrossHostReceiveBuffers(
       xla::PjRtDevice* device, absl::Span<const xla::Shape> shapes,
-      absl::Span<const PjRtGlobalDeviceId> src_global_device_ids,
+      absl::Span<const GlobalDeviceId> src_global_device_ids,
       std::vector<CrossHostTransferKey> transfer_keys) override;
 
   // ScheduleRemoteSend and MakeCrossHostReceiveBuffers are methods implemented
@@ -219,7 +219,7 @@ class StreamExecutorGpuClient : public xla::PjRtStreamExecutorClient {
 
   void ScheduleSendsOnLocalDevice(
       PjRtDevice* device, std::vector<PjRtBuffer*> buffers,
-      std::vector<PjRtGlobalDeviceId> dst_global_device_ids,
+      std::vector<GlobalDeviceId> dst_global_device_ids,
       std::vector<CrossHostTransferKey> transfer_keys,
       std::vector<std::shared_ptr<Promise<>>> promises);
 
