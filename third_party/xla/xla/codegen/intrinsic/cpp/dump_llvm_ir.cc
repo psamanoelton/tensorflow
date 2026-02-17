@@ -24,7 +24,7 @@ limitations under the License.
 #include "xla/codegen/intrinsic/cpp/eigen_unary_ll.h"
 
 int main(int argc, char** argv) {
-  const std::string& bitcode_view = llvm_ir::kEigenUnaryLlIr;
+  std::string bitcode_view = llvm_ir::kEigenUnaryLlIr;
 
   llvm::LLVMContext context;
   std::unique_ptr<llvm::Module> module = xla::codegen::ParseEmbeddedBitcode(
