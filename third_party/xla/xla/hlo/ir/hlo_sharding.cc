@@ -1146,6 +1146,167 @@ OpSharding HloSharding::ToProto() const {
   return result;
 }
 
+/*static*/ HloSharding HloSharding::ToNamedSharding(
+    const HloSharding& sharding) {
+  if (sharding.IsTuple()) {
+    std::vector<HloSharding> v3_elements;
+    v3_elements.reserve(sharding.tuple_elements().size());
+    for (const HloSharding& element : sharding.tuple_elements()) {
+      v3_elements.push_back(ToNamedSharding(element));
+    }
+    return HloSharding::FlatTuple(std::move(v3_elements));
+  }
+  if (sharding.UseNamedShardingLeaf()) {
+    return sharding;
+  }
+  if (sharding.IsReplicated()) {
+    return HloSharding(NamedSharding::Replicate(sharding.metadata()));
+  }
+  if (sharding.IsTileMaximal()) {
+    return HloSharding(NamedSharding::MaximalSharding(
+        sharding.tile_assignment().first(), sharding.metadata()));
+  }
+
+  // Tiled sharding.
+  const TileAssignment& tile_assignment = sharding.tile_assignment();
+  const AnalyzeTileAssignmentResult result =
+      AnalyzeTileAssignment(tile_assignment, /*fallback_to_trivial_axes=*/true);
+
+  // Construct Mesh.
+  std::vector<std::string> axes_names;
+  axes_names.reserve(result.local_mesh.size());
+  for (int64_t i = 0; i < result.local_mesh.size(); ++i) {
+    axes_names.push_back(absl::StrCat("axis_", i));
+  }
+  std::vector<absl::string_view> axes_names_views(axes_names.begin(),
+                                                  axes_names.end());
+
+  // Construct `source_axes` which maps each dimension of the reshaped
+  // `mesh_devices` array to the corresponding `local_mesh` axis index.
+  std::vector<int64_t> source_axes;
+  source_axes.reserve(result.local_mesh.size());
+
+  const int64_t rank = sharding.TiledDataRank();
+  const int64_t total_dims = tile_assignment.num_dimensions();
+
+  // Map from logical dimension to list of local axis indices (minor-to-major).
+  std::vector<std::vector<int64_t>> dim_to_local_axes(total_dims);
+
+  for (size_t local_axis_index = 0; local_axis_index < result.sub_dims.size();
+       ++local_axis_index) {
+    const SubDimInfo& sub_dim_info = result.sub_dims[local_axis_index];
+    std::vector<int64_t>& axes = dim_to_local_axes[sub_dim_info.tile_dim_index];
+    if (sub_dim_info.tile_sub_dim_index >= axes.size()) {
+      axes.resize(sub_dim_info.tile_sub_dim_index + 1);
+    }
+    axes[sub_dim_info.tile_sub_dim_index] = local_axis_index;
+  }
+
+  // Append data axes to source_axes.
+  // Array layout iterates major to minor sub-dims for each dimension.
+  // dim_to_local_axes is stored minor to major (by tile_sub_dim_index).
+  for (int64_t i = 0; i < total_dims; ++i) {
+    const std::vector<int64_t>& axes = dim_to_local_axes[i];
+    for (auto it = axes.rbegin(); it != axes.rend(); ++it) {
+      source_axes.push_back(*it);
+    }
+  }
+
+  // Check that source_axes is a permutation of 0..local_mesh.size()-1.
+  CHECK_EQ(source_axes.size(), result.local_mesh.size());
+
+  std::optional<Mesh> mesh;
+  if (result.uses_iota_factorization) {
+    // If we successfully factorized the iota tile assignment, the resulting
+    // mesh is guaranteed to be an iota mesh (0, 1, ..., N-1) corresponding
+    // to the linearized order of the reshape dimensions (permuted).
+    mesh.emplace(result.local_mesh, axes_names_views);
+  } else {
+    Array<int64_t> mesh_devices = tile_assignment.array();
+
+    // Reshape array to the factors.
+    std::vector<int64_t> array_reshape_dims;
+    array_reshape_dims.reserve(source_axes.size());
+    for (int64_t axis_idx : source_axes) {
+      array_reshape_dims.push_back(result.local_mesh[axis_idx]);
+    }
+    mesh_devices.Reshape(array_reshape_dims);
+
+    // Calculate the permutation required to transpose `mesh_devices` such that
+    // its dimensions correspond to `local_mesh` axes in order (0, 1, ...).
+    std::vector<int> transpose_perm(source_axes.size());
+    for (int k = 0; k < source_axes.size(); ++k) {
+      transpose_perm[source_axes[k]] = k;
+    }
+
+    if (source_axes.size() > 1) {
+      mesh_devices.TransposeDimensions(transpose_perm);
+    }
+
+    bool is_iota = true;
+    int64_t expected_device = 0;
+    for (int64_t device : mesh_devices) {
+      if (device != expected_device++) {
+        is_iota = false;
+        break;
+      }
+    }
+
+    if (is_iota) {
+      mesh.emplace(result.local_mesh, axes_names_views);
+    } else {
+      mesh.emplace(mesh_devices, axes_names_views);
+    }
+  }
+
+  std::vector<AxisRef> manual_axes;
+  std::vector<AxisRef> unreduced_axes;
+  std::vector<AxisRef> replicated_axes;
+
+  // Classify subgroup axes based on the sharding type.
+  for (size_t local_axis_index = 0; local_axis_index < result.sub_dims.size();
+       ++local_axis_index) {
+    const SubDimInfo& sub_dim_info = result.sub_dims[local_axis_index];
+    if (sub_dim_info.tile_dim_index >= rank) {
+      int64_t subgroup_idx = sub_dim_info.tile_dim_index - rank;
+      OpSharding::Type type;
+      if (sharding.ReplicateOnLastTileDim()) {
+        CHECK_EQ(subgroup_idx, 0);
+        type = OpSharding::REPLICATED;
+      } else {
+        type = sharding.subgroup_types()[subgroup_idx];
+      }
+
+      if (type == OpSharding::MANUAL) {
+        manual_axes.emplace_back(local_axis_index);
+      } else if (type == OpSharding::UNREDUCED) {
+        unreduced_axes.emplace_back(local_axis_index);
+      } else if (type == OpSharding::REPLICATED) {
+        replicated_axes.emplace_back(local_axis_index);
+      } else {
+        LOG(FATAL) << "Unsupported subgroup type: "
+                   << OpSharding::Type_Name(type);
+      }
+    }
+  }
+
+  // Construct dimension shardings, ensuring axes are ordered major-to-minor.
+  std::vector<NamedSharding::DimensionSharding> dim_shardings;
+  dim_shardings.reserve(rank);
+  for (int i = 0; i < rank; ++i) {
+    const std::vector<int64_t>& axes = dim_to_local_axes[i];
+    std::vector<AxisRef> axis_refs;
+    for (auto it = axes.rbegin(); it != axes.rend(); ++it) {
+      axis_refs.emplace_back(*it);
+    }
+    dim_shardings.emplace_back(axis_refs, /*is_closed=*/true);
+  }
+
+  return HloSharding(NamedSharding(*mesh, dim_shardings, replicated_axes,
+                                   unreduced_axes, manual_axes,
+                                   sharding.metadata()));
+}
+
 /*static*/ HloSharding HloSharding::V3ToV2Sharding(
     const NamedSharding& sharding) {
   // TODO(b/477900810): Remove sharding conversions.
