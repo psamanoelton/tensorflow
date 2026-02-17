@@ -2,6 +2,7 @@ load(
     "@bazel_skylib//:bzl_library.bzl",
     "bzl_library",
 )
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load(
     "//xla/tsl:tsl.bzl",
     "if_not_fuchsia",
@@ -933,6 +934,42 @@ cc_library(
         "@com_google_absl//absl/strings:cord",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/synchronization",
+    ],
+)
+
+cc_library(
+    name = "zip_util",
+    srcs = ["zip_util.cc"],
+    hdrs = ["zip_util.h"],
+    deps = [
+        ":env",
+        ":file_statistics",
+        "//third_party/libzip:zip",
+        "//third_party/protobuf/io",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
+        "@tsl//tsl/platform:env",
+        "@tsl//tsl/platform:zip_interface",
+    ],
+)
+
+tsl_cc_test(
+    name = "zip_util_test",
+    srcs = ["zip_util_test.cc"],
+    deps = [
+        ":env",
+        ":zip_util",
+        "//third_party/libzip:zip",
+        "//third_party/protobuf/io",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+        "@tsl//tsl/platform:path",
+        "@tsl//tsl/platform:zip_interface",
     ],
 )
 

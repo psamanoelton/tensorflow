@@ -335,6 +335,20 @@ cc_library(
 )
 
 cc_library(
+    name = "zip",
+    srcs = ["zip.cc"],
+    hdrs = ["@tsl//tsl/platform:zip.h"],
+    copts = tsl_copts(),
+    deps = [
+        "//third_party/protobuf/io",
+        "//xla/tsl/platform:zip_util",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@tsl//tsl/platform:zip_interface",
+    ],
+)
+
+cc_library(
     name = "platform_port",
     srcs = [
         "port.cc",
