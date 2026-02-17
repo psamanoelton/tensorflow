@@ -951,9 +951,8 @@ absl::StatusOr<bool> P2PSchedulePreparation::RunImpl(
     // other P2P chains.
     std::vector<HloInstruction*> all_instructions =
         computation->MakeInstructionPostOrder();
-    std::vector<HloInstruction*>::iterator begin = all_instructions.begin();
-    std::vector<HloInstruction*>::iterator end = all_instructions.end();
-    for (auto instr_it = begin; instr_it != end; ++instr_it) {
+    for (auto instr_it = all_instructions.begin();
+         instr_it != all_instructions.end(); ++instr_it) {
       HloInstruction* hlo = *instr_it;
       if (!IsP2POp(hlo)) {
         continue;
