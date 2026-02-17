@@ -110,6 +110,7 @@ tf_py_strict_test(
     srcs = ["summary_v2_test.py"],
     deps = [
         ":summary_py",
+        ":tb_summary",
         "//tensorflow/python/framework:constant_op",
         "//tensorflow/python/framework:dtypes",
         "//tensorflow/python/framework:ops",
@@ -118,7 +119,6 @@ tf_py_strict_test(
         "//tensorflow/python/ops:summary_ops_v2",
         "//tensorflow/python/platform:client_testlib",
         "//tensorflow/python/training:training_util",
-        "@pypi//tb_nightly",
     ],
 )
 
@@ -126,5 +126,20 @@ py_strict_library(
     name = "tb_summary",
     srcs = ["tb_summary.py"],
     visibility = ["//tensorflow:internal"],
-    deps = ["//tensorflow/python/util:tf_export"],
+    deps = [
+        "//tensorflow/core:protos_all_py",
+        "//tensorflow/python/framework:constant_op",
+        "//tensorflow/python/framework:dtypes",
+        "//tensorflow/python/framework:ops",
+        "//tensorflow/python/framework:tensor_conversion_registry",
+        "//tensorflow/python/ops:array_ops",
+        "//tensorflow/python/ops:audio_ops_gen",
+        "//tensorflow/python/ops:cond",
+        "//tensorflow/python/ops:image_ops",
+        "//tensorflow/python/ops:map_fn",
+        "//tensorflow/python/ops:math_ops",
+        "//tensorflow/python/ops:string_ops",
+        "//tensorflow/python/ops:summary_ops_v2",
+        "//tensorflow/python/util:tf_export",
+    ],
 )
