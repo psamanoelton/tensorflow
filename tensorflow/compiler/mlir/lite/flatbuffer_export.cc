@@ -18,6 +18,7 @@ limitations under the License.
 #include <stdlib.h>
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -1196,16 +1197,50 @@ std::optional<BufferOffset<tflite::Buffer>> Translator::BuildBuffer(
            auto apply) {
           auto [attr_, inst] = attr_and_inst;
           auto attr = mlir::cast<ElementsAttr>(attr_);
+          auto shaped_type = mlir::dyn_cast<mlir::ShapedType>(attr.getType());
 
+          constexpr bool is_little_endian =
+              std::endian::native == std::endian::little;
+
+          // Optimization Path for Numeric Dtypes (f32, i32, etc.)
+          // Flatbuffer requires little endian for numeric types. If the host
+          // is big endian, rely on the TensorFlow path below to reverse the
+          // byte order.
+          if (is_little_endian && shaped_type &&
+              shaped_type.getElementType().isIntOrFloat()) {
+            int64_t element_size =
+                mlir::TFL::GetSizeInBytes(shaped_type.getElementType());
+            int64_t expected_size = shaped_type.getNumElements() * element_size;
+
+            // DenseElementsAttr
+            if (auto dense_attr =
+                    mlir::dyn_cast<mlir::DenseElementsAttr>(attr)) {
+              // Only use the optimization if it's not a single-value (Splat)
+              // and the raw memory matches the logical dimensions exactly.
+              if (!dense_attr.isSplat() &&
+                  dense_attr.getRawData().size() == expected_size) {
+                return apply(absl::string_view(dense_attr.getRawData().data(),
+                                               dense_attr.getRawData().size()));
+              }
+            }
+
+            // DenseResourceElementsAttr
+            if (auto res_attr =
+                    mlir::dyn_cast<mlir::DenseResourceElementsAttr>(attr)) {
+              if (auto blob =
+                      res_attr.getRawHandle().getResource()->getBlob()) {
+                auto data = blob->getData();
+                if (data.size() == expected_size) {
+                  return apply(absl::string_view(
+                      reinterpret_cast<const char*>(data.data()), data.size()));
+                }
+              }
+            }
+          }
+
+          // Fallback Path: use TensorFlow's conversion for compatibility.
           auto tensor = std::make_unique<tensorflow::Tensor>();
           auto status = tensorflow::ConvertToTensor(attr, tensor.get());
-
-          // Reset the attribute after copying it to a tensorflow::Tensor
-          // because the attribute is not needed anymore.
-          if (auto dense_resource_attr =
-                  dyn_cast<mlir::DenseResourceElementsAttr>(attr)) {
-            dense_resource_attr.getRawHandle().getResource()->setBlob({});
-          }
 
           if (!status.ok()) {
             std::string error_message =
