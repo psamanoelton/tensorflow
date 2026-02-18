@@ -19,8 +19,8 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "riegeli/bytes/fd_writer.h"
 #include "riegeli/bytes/writer.h"
+#include "riegeli/tensorflow/io/file_writer.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/service/dump.h"
 #include "xla/service/dump_options.h"
@@ -52,7 +52,7 @@ absl::StatusOr<std::unique_ptr<riegeli::Writer>> CreateRiegeliDumpWriter(
 
   std::string file_path =
       tsl::io::JoinPath(opts.dump_to, SanitizeFileName(partial_path));
-  return std::make_unique<riegeli::FdWriter<>>(file_path);
+  return std::make_unique<riegeli::tensorflow::FileWriter<>>(file_path);
 }
 
 }  // namespace xla

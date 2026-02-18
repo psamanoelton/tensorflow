@@ -606,8 +606,8 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
-        "@riegeli//riegeli/bytes:fd_writer",
         "@riegeli//riegeli/bytes:writer",
+        "@riegeli//riegeli/tensorflow/io:file_writer",
         "@tsl//tsl/platform:path",
     ],
 )
